@@ -24,8 +24,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-REGADAM_ID = "asst_YRAaYkFRKMHr4hAfgPPWk7IG"
-VECTOR_STORE_ID = "vs_67dc62a06ad88191baa71d739acd4dcf"
+REGADAM_ID = "asst_No" # change for RegAdam ID
+VECTOR_STORE_ID = "vs_ID" # change for ReAdam_VS ID
 LOG_FILE = "chat_metrics.csv"
 FEEDBACK_LOG_FILE = "feedback_metrics.csv"
 
