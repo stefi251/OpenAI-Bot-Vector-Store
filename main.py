@@ -280,6 +280,21 @@ class DiagnosticContext:
         }
 
 
+def _parse_json_blob(blob: str) -> Optional[Dict[str, Any]]:
+    if not blob:
+        return None
+    candidate = blob.strip()
+    for fence in ("```json", "```"):
+        if candidate.startswith(fence):
+            candidate = candidate[len(fence):].strip()
+    if candidate.endswith("```"):
+        candidate = candidate[:-3].strip()
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+
+
 def _extract_json_from_response(response) -> Dict[str, Any]:
     payload = response.model_dump()
     for item in payload.get("output", []):
@@ -297,10 +312,9 @@ def _extract_json_from_response(response) -> Dict[str, Any]:
                 if isinstance(candidate, str):
                     text_value = candidate
             if text_value:
-                try:
-                    return json.loads(text_value)
-                except json.JSONDecodeError:
-                    continue
+                parsed = _parse_json_blob(text_value)
+                if parsed:
+                    return parsed
     output_text = getattr(response, "output_text", None)
     if output_text:
         if isinstance(output_text, str):
@@ -308,10 +322,9 @@ def _extract_json_from_response(response) -> Dict[str, Any]:
         else:
             output_candidates = output_text
         for text_value in output_candidates:
-            try:
-                return json.loads(text_value)
-            except json.JSONDecodeError:
-                continue
+            parsed = _parse_json_blob(text_value)
+            if parsed:
+                return parsed
     logger.error("Parser raw payload: %s", payload)
     raise RuntimeError("Unable to extract JSON from parser response")
 
