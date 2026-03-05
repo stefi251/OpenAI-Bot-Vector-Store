@@ -84,6 +84,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "missing_prefix_title": "Need actuator ID",
         "missing_prefix_body": "Please provide the numeric prefix from the actuator nameplate (e.g., 280) before we continue troubleshooting.",
         "back_button": "Return Home",
+        "prompt_need_prefix": "Thanks for the details. Please provide the numeric prefix from the actuator nameplate (for example 280) so I can identify the device.",
+        "prompt_need_error": "Great. Now please share the error code, LED pattern, or alarm message shown on the actuator.",
+        "prompt_continue_button": "Send follow-up question",
     },
     "sk": {
         "lang_label": "Slovenčina",
@@ -105,6 +108,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "missing_prefix_title": "Potrebujeme identifikáciu pohonu",
         "missing_prefix_body": "Zadajte prosím číselný prefix zo štítku servopohonu (napr. 280), až potom môžeme pokračovať v diagnostike.",
         "back_button": "Späť domov",
+        "prompt_need_prefix": "Ďakujeme za popis. Pošlite prosím číselný prefix zo štítku servopohonu (napr. 280), aby sme vedeli identifikovať zariadenie.",
+        "prompt_need_error": "Výborne. Teraz nám pošlite chybový kód alebo vzor blikania LED, ktorý pohon zobrazuje.",
+        "prompt_continue_button": "Poslať doplňujúcu otázku",
     },
     "ru": {
         "lang_label": "Русский",
@@ -126,6 +132,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "missing_prefix_title": "Нужен номер привода",
         "missing_prefix_body": "Пожалуйста, укажите цифровой префикс с шильдика привода (например, 280), после этого мы продолжим диагностику.",
         "back_button": "Вернуться",
+        "prompt_need_prefix": "Спасибо за описание. Укажите числовой префикс с таблички привода (например 280), чтобы я определил модель.",
+        "prompt_need_error": "Хорошо. Теперь поделитесь кодом ошибки или шаблоном миганий, который отображает привод.",
+        "prompt_continue_button": "Отправить уточнение",
     },
 }
 
@@ -358,8 +367,30 @@ def build_diagnostic_context(question: str) -> DiagnosticContext:
     return DiagnosticContext(parsed=parsed, actuator=actuator, error=error)
 
 
-def needs_prefix_request(context: DiagnosticContext) -> bool:
-    return context.parsed.actuator_number_prefix is None
+def actuator_is_intelligent(context: DiagnosticContext) -> bool:
+    if not context.actuator:
+        return False
+    text = " ".join(
+        [
+            context.actuator.get("actuator_model", ""),
+            context.actuator.get("actuator_type", ""),
+            context.actuator.get("control_type", ""),
+        ]
+    ).lower()
+    keywords = ("pa", "inteligent", "intelligent", "smart")
+    return any(keyword in text for keyword in keywords)
+
+
+def needs_error_code(context: DiagnosticContext) -> bool:
+    return actuator_is_intelligent(context)
+
+
+def determine_next_action(context: DiagnosticContext) -> str:
+    if not context.parsed.actuator_number_prefix:
+        return "need_prefix"
+    if needs_error_code(context) and not context.parsed.error_code:
+        return "need_error"
+    return "ready"
 
 
 def _build_user_message(question: str, context: DiagnosticContext) -> List[Dict[str, str]]:
@@ -421,7 +452,6 @@ async def run_language_assistant(
 ) -> Tuple[str, str, str]:
     cfg = get_language_config(lang)
     assistant_id = cfg["assistant_id"]
-    vector_store_id = cfg["vector_store_id"]
 
     user_content = _build_user_message(question, diagnostic_context)
 
@@ -445,15 +475,11 @@ async def run_language_assistant(
         )
         thread_id = thread.id
 
-    run_kwargs = {
-        "thread_id": thread_id,
-        "assistant_id": assistant_id,
-    }
-    if vector_store_id:
-        run_kwargs["tool_resources"] = {
-            "file_search": {"vector_store_ids": [vector_store_id]}
-        }
-    run = await asyncio.to_thread(client.beta.threads.runs.create, **run_kwargs)
+    run = await asyncio.to_thread(
+        client.beta.threads.runs.create,
+        thread_id=thread_id,
+        assistant_id=assistant_id,
+    )
 
     start_time = time.time()
     timeout = 60
@@ -840,59 +866,47 @@ async def ask(
     history_entries = _load_conversation_history(thread_id_value)
     translations = get_translations(response_language)
 
-    if needs_prefix_request(diagnostic_context):
-        t_safe = {key: html.escape(value) for key, value in translations.items()}
-        safe_question = html.escape(cleaned_question)
-        lang_param = html.escape(response_language)
-        return HTMLResponse(
-            content=f"""
-        <html><body style='padding:20px;font-family:sans-serif;background:#f5f5f5;'>
-            <div style="max-width:640px;margin:0 auto;background:#fff;padding:30px;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.08);">
-                <div style="text-transform:uppercase;font-size:12px;color:#6c757d;margin-bottom:8px;">{t_safe["language_select_label"]}: {t_safe["lang_label"]}</div>
-                <h2>{t_safe["missing_prefix_title"]}</h2>
-                <p>{t_safe["missing_prefix_body"]}</p>
-                <p><b>{safe_question}</b></p>
-                <a href="/?lang={lang_param}" style="display:inline-block;margin-top:16px;padding:10px 18px;border-radius:8px;background:#0066cc;color:#fff;text-decoration:none;">{t_safe["back_button"]}</a>
-            </div>
-        </body></html>
-        """,
-            status_code=200,
-        )
-
-    try:
-        thread_id_value, answer_text, citations_html = await run_language_assistant(
-            cleaned_question,
-            response_language,
-            diagnostic_context,
-            thread_id_value,
-        )
-    except TimeoutError:
-        return HTMLResponse(content="Assistant response timeout. Please try again later.", status_code=504)
-    except OpenAIError as exc:
-        logger.error(f"OpenAI API error: {exc}")
-        return HTMLResponse(
-            content="""
-        <html><body style='padding:20px;font-family:sans-serif;'>
-            <h3>⚠️ Service Temporarily Unavailable</h3>
-            <p>We're experiencing connectivity issues with our AI service.</p>
-            <p>Please try again in a few moments or contact support.</p>
-            <a href='/'>← Return Home</a>
-        </body></html>
-        """,
-            status_code=503,
-        )
-    except Exception as exc:
-        logger.error(f"Unexpected error creating response: {exc}")
-        return HTMLResponse(
-            content="""
-        <html><body style='padding:20px;font-family:sans-serif;'>
-            <h3>⚠️ System Error</h3>
-            <p>An unexpected error occurred. Our team has been notified.</p>
-            <a href='/'>← Return Home</a>
-        </body></html>
-        """,
-            status_code=500,
-        )
+    action = determine_next_action(diagnostic_context)
+    citations_html = ""
+    if action == "need_prefix":
+        answer_text = translations["prompt_need_prefix"]
+    elif action == "need_error":
+        answer_text = translations["prompt_need_error"]
+    else:
+        try:
+            thread_id_value, answer_text, citations_html = await run_language_assistant(
+                cleaned_question,
+                response_language,
+                diagnostic_context,
+                thread_id_value,
+            )
+        except TimeoutError:
+            return HTMLResponse(content="Assistant response timeout. Please try again later.", status_code=504)
+        except OpenAIError as exc:
+            logger.error(f"OpenAI API error: {exc}")
+            return HTMLResponse(
+                content="""
+            <html><body style='padding:20px;font-family:sans-serif;'>
+                <h3>⚠️ Service Temporarily Unavailable</h3>
+                <p>We're experiencing connectivity issues with our AI service.</p>
+                <p>Please try again in a few moments or contact support.</p>
+                <a href='/'>← Return Home</a>
+            </body></html>
+            """,
+                status_code=503,
+            )
+        except Exception as exc:
+            logger.error(f"Unexpected error creating response: {exc}")
+            return HTMLResponse(
+                content="""
+            <html><body style='padding:20px;font-family:sans-serif;'>
+                <h3>⚠️ System Error</h3>
+                <p>An unexpected error occurred. Our team has been notified.</p>
+                <a href='/'>← Return Home</a>
+            </body></html>
+            """,
+                status_code=500,
+            )
 
     log_row = [
         datetime.now().isoformat(),
@@ -932,6 +946,7 @@ async def ask(
     lang_param = html.escape(response_language)
     contact_html = _contact_card_html()
     t_safe = {key: html.escape(value) for key, value in translations.items()}
+    continue_button_label = t_safe.get("prompt_continue_button", t_safe["continue_conversation"])
 
     page_html = f"""
     <!DOCTYPE html>
@@ -1075,7 +1090,7 @@ async def ask(
                         <input type="hidden" name="thread_id" value="{safe_thread_id}">
                         <input type="hidden" name="lang" value="{lang_param}">
                         {captcha_block}
-                        <button type="submit" class="btn btn-solid" style="margin-top:12px;">{t_safe["continue_conversation"]}</button>
+                        <button type="submit" class="btn btn-solid" style="margin-top:12px;">{continue_button_label}</button>
                     </form>
                     <div class="feedback-actions" style="margin-top:20px;">
                         <form action="/escalate" method="post">
@@ -1197,7 +1212,7 @@ async def escalate(thread_id: str = Form(...), history_blob: str = Form(None)):
     """)
 
 @app.get("/stats")
-async def stats():
+async def stats(request: Request):
     try:
         chat_stats = {"n_chats": 0, "n_questions": 0}
         feedback_stats = {"total": 0, "positive": 0, "negative": 0, "rate": 0}
