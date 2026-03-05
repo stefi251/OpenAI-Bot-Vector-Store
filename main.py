@@ -10,8 +10,9 @@ import time
 import uuid
 from base64 import b64decode, b64encode
 from collections import defaultdict, deque
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 import httpx
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -38,12 +39,277 @@ if not OPENAI_API_KEY:
 client = OpenAI()
 
 REGADAM_MODEL = os.getenv("REGADAM_MODEL", "o4-mini")
+PARSER_MODEL = os.getenv("PARSER_MODEL", "gpt-4.1-mini")
+DEFAULT_LANGUAGE = os.getenv("DEFAULT_LANGUAGE", "en").lower()
 SYSTEM_PROMPT = os.getenv(
     "REGADAM_SYSTEM_PROMPT",
     "Ste Regada Valve virtuálny technik. Odpovedajte po slovensky, buďte vecní "
     "a ak je to možné, opierajte sa o znalostnú bázu Regada Valve.",
 )
 VECTOR_STORE_ID = os.getenv("VECTOR_STORE_ID", "vs_ID")
+LANGUAGE_CONFIG: Dict[str, Dict[str, Optional[str]]] = {
+    "en": {
+        "label": "English",
+        "assistant_id": os.getenv("ASSISTANT_ID_EN"),
+        "vector_store_id": os.getenv("VECTOR_STORE_ID_EN"),
+    },
+    "sk": {
+        "label": "Slovak",
+        "assistant_id": os.getenv("ASSISTANT_ID_SK"),
+        "vector_store_id": os.getenv("VECTOR_STORE_ID_SK"),
+    },
+    "ru": {
+        "label": "Russian",
+        "assistant_id": os.getenv("ASSISTANT_ID_RU"),
+        "vector_store_id": os.getenv("VECTOR_STORE_ID_RU"),
+    },
+}
+TRANSLATIONS: Dict[str, Dict[str, str]] = {
+    "en": {
+        "lang_label": "English",
+        "landing_title": "Regada Valve Assistant",
+        "landing_intro": "Describe your actuator issue and RegAdam will guide you.",
+        "textarea_placeholder": "Example: actuator shows E44 and won't rotate.",
+        "submit_button": "Start Assistant",
+        "conversation_history": "Conversation History",
+        "your_question": "Your Question",
+        "assistant_response": "Assistant Response",
+        "helpful": "Helpful",
+        "not_helpful": "Not Helpful",
+        "continue_conversation": "Continue Conversation",
+        "escalate": "Escalate to Human Support",
+        "new_convo": "New Conversation",
+        "admin_stats": "Admin Stats",
+        "feedback_prompt": "Was this response helpful?",
+        "language_select_label": "Language",
+    },
+    "sk": {
+        "lang_label": "Slovenčina",
+        "landing_title": "Regada servis – AI asistent",
+        "landing_intro": "Napíšte problém so servopohonom alebo ventilom a RegAdam vás prevedie ďalším postupom.",
+        "textarea_placeholder": "Príklad: motor hučí a svieti E17.",
+        "submit_button": "Spustiť asistenta",
+        "conversation_history": "História konverzácie",
+        "your_question": "Vaša otázka",
+        "assistant_response": "Odpoveď asistenta",
+        "helpful": "Pomohlo",
+        "not_helpful": "Nepomohlo",
+        "continue_conversation": "Pokračovať v konverzácii",
+        "escalate": "Eskalovať na servis",
+        "new_convo": "Nová konverzácia",
+        "admin_stats": "Admin štatistiky",
+        "feedback_prompt": "Bola odpoveď užitočná?",
+        "language_select_label": "Jazyk",
+    },
+    "ru": {
+        "lang_label": "Русский",
+        "landing_title": "Regada — технический ассистент",
+        "landing_intro": "Опишите проблему с приводом, и RegAdam подскажет дальнейшие шаги.",
+        "textarea_placeholder": "Пример: ошибка E44 и привод не вращается.",
+        "submit_button": "Запустить ассистента",
+        "conversation_history": "История диалога",
+        "your_question": "Ваш вопрос",
+        "assistant_response": "Ответ ассистента",
+        "helpful": "Полезно",
+        "not_helpful": "Не помогло",
+        "continue_conversation": "Продолжить диалог",
+        "escalate": "Эскалация в поддержку",
+        "new_convo": "Новый разговор",
+        "admin_stats": "Админ статистика",
+        "feedback_prompt": "Ответ был полезным?",
+        "language_select_label": "Язык",
+    },
+}
+PARSER_SYSTEM_PROMPT = """
+You are a diagnostic parser for an industrial actuator support system.
+Your task is ONLY to extract structured diagnostic information from the user message.
+Do not provide explanations or solutions.
+Extract the following fields if present:
+- actuator_number_prefix
+- actuator_model
+- error_code
+- led_pattern
+- symptoms
+- user_question
+- language
+Rules:
+• actuator_number_prefix = first digits from actuator nameplate
+• error_code = normalized numeric error code (remove E/e and leading zeros)
+• if error code cannot be determined leave null
+• do not guess missing values
+• if multiple values appear return the most explicit one
+Output strictly in JSON.
+""".strip()
+PARSER_JSON_SCHEMA = {
+    "name": "diagnostic_parser",
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "actuator_number_prefix": {"type": ["string", "null"]},
+            "actuator_model": {"type": ["string", "null"]},
+            "error_code": {"type": ["string", "null"]},
+            "led_pattern": {"type": ["string", "null"]},
+            "symptoms": {"type": ["string", "null"]},
+            "user_question": {"type": "string"},
+            "language": {"type": ["string", "null"]},
+        },
+        "required": [
+            "actuator_number_prefix",
+            "actuator_model",
+            "error_code",
+            "led_pattern",
+            "symptoms",
+            "user_question",
+            "language",
+        ],
+    },
+}
+
+
+def _validate_language_config() -> None:
+    if DEFAULT_LANGUAGE not in LANGUAGE_CONFIG:
+        raise RuntimeError(f"DEFAULT_LANGUAGE '{DEFAULT_LANGUAGE}' not configured")
+    missing = []
+    for lang_code, cfg in LANGUAGE_CONFIG.items():
+        if not cfg.get("assistant_id") or not cfg.get("vector_store_id"):
+            missing.append(lang_code)
+    if missing:
+        raise RuntimeError(
+            f"Missing assistant/vector store IDs for languages: {', '.join(sorted(missing))}"
+        )
+
+
+def resolve_language(lang: Optional[str]) -> str:
+    candidate = (lang or DEFAULT_LANGUAGE).lower()
+    if candidate not in LANGUAGE_CONFIG:
+        return DEFAULT_LANGUAGE
+    cfg = LANGUAGE_CONFIG.get(candidate, {})
+    if not cfg.get("assistant_id") or not cfg.get("vector_store_id"):
+        return DEFAULT_LANGUAGE
+    return candidate
+
+
+def get_language_config(lang: Optional[str]) -> Dict[str, Optional[str]]:
+    resolved = resolve_language(lang)
+    return LANGUAGE_CONFIG[resolved]
+
+
+def get_translations(lang: Optional[str]) -> Dict[str, str]:
+    resolved = resolve_language(lang)
+    return TRANSLATIONS.get(resolved, TRANSLATIONS[DEFAULT_LANGUAGE])
+
+
+_validate_language_config()
+
+
+def _clean_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_error_code(value: Optional[str]) -> Optional[str]:
+    text = _clean_text(value)
+    if not text:
+        return None
+    text = text.lstrip("Ee")
+    text = text.lstrip("0")
+    return text or "0"
+
+
+def _normalize_prefix(value: Optional[str]) -> Optional[str]:
+    text = _clean_text(value)
+    if not text:
+        return None
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return digits or text.upper()
+
+
+@dataclass
+class ParsedDiagnostics:
+    actuator_number_prefix: Optional[str]
+    actuator_model: Optional[str]
+    error_code: Optional[str]
+    led_pattern: Optional[str]
+    symptoms: Optional[str]
+    user_question: str
+    language: str
+
+    def to_dict(self) -> Dict[str, Optional[str]]:
+        return {
+            "actuator_number_prefix": self.actuator_number_prefix,
+            "actuator_model": self.actuator_model,
+            "error_code": self.error_code,
+            "led_pattern": self.led_pattern,
+            "symptoms": self.symptoms,
+            "user_question": self.user_question,
+            "language": self.language,
+        }
+
+
+@dataclass
+class DiagnosticContext:
+    parsed: ParsedDiagnostics
+    actuator: Optional[Dict[str, str]]
+    error: Optional[Dict[str, str]]
+
+    def to_payload(self) -> Dict[str, Any]:
+        return {
+            "parsed": self.parsed.to_dict(),
+            "actuator_lookup": self.actuator,
+            "error_lookup": self.error,
+        }
+
+
+def _extract_json_from_response(response) -> Dict[str, Any]:
+    payload = response.model_dump()
+    for item in payload.get("output", []):
+        for content in item.get("content", []):
+            if "json" in content:
+                return content["json"]
+            text_value = content.get("text")
+            if text_value:
+                try:
+                    return json.loads(text_value)
+                except json.JSONDecodeError:
+                    continue
+    raise RuntimeError("Unable to extract JSON from parser response")
+
+
+def call_diagnostic_parser(question: str) -> ParsedDiagnostics:
+    messages = [
+        {"role": "system", "content": PARSER_SYSTEM_PROMPT},
+        {"role": "user", "content": question},
+    ]
+    response = client.responses.create(
+        model=PARSER_MODEL,
+        input=messages,
+        response_format={"type": "json_schema", "json_schema": PARSER_JSON_SCHEMA},
+    )
+    raw = _extract_json_from_response(response)
+    parsed = ParsedDiagnostics(
+        actuator_number_prefix=_normalize_prefix(raw.get("actuator_number_prefix")),
+        actuator_model=_clean_text(raw.get("actuator_model")),
+        error_code=_normalize_error_code(raw.get("error_code")),
+        led_pattern=_clean_text(raw.get("led_pattern")),
+        symptoms=_clean_text(raw.get("symptoms")),
+        user_question=_clean_text(raw.get("user_question")) or question,
+        language=resolve_language(raw.get("language")),
+    )
+    return parsed
+
+
+def build_diagnostic_context(question: str) -> DiagnosticContext:
+    parsed = call_diagnostic_parser(question)
+    actuator = lookup_actuator(parsed.actuator_number_prefix)
+    error = lookup_error(parsed.error_code)
+    return DiagnosticContext(parsed=parsed, actuator=actuator, error=error)
+
+
+def needs_prefix_request(context: DiagnosticContext) -> bool:
+    return context.parsed.actuator_number_prefix is None
 RECAPTCHA_SITE_KEY = os.getenv("RECAPTCHA_SITE_KEY")
 RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY")
 ASK_RATE_LIMIT_MAX = int(os.getenv("ASK_RATE_LIMIT_MAX", "5"))
