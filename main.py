@@ -301,6 +301,18 @@ def _extract_json_from_response(response) -> Dict[str, Any]:
                     return json.loads(text_value)
                 except json.JSONDecodeError:
                     continue
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        if isinstance(output_text, str):
+            output_candidates = [output_text]
+        else:
+            output_candidates = output_text
+        for text_value in output_candidates:
+            try:
+                return json.loads(text_value)
+            except json.JSONDecodeError:
+                continue
+    logger.error("Parser raw payload: %s", payload)
     raise RuntimeError("Unable to extract JSON from parser response")
 
 
