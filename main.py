@@ -14,11 +14,12 @@ from datetime import datetime
 from typing import Deque, Dict, List, Optional
 
 import httpx
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 import logging
 from openai import OpenAI, OpenAIError
+from data_loader import lookup_actuator, lookup_error
 
 logging.basicConfig(
     level=logging.INFO,
@@ -932,6 +933,29 @@ async def health_check():
         return {"status": "healthy", "timestamp": datetime.now().isoformat()}
     except Exception as e:
         return {"status": "unhealthy", "error": str(e)}
+
+
+@app.get("/debug/error/{code}")
+async def debug_error(code: str):
+    """
+    Lightweight helper to verify structured error lookups before wiring
+    them into the two-stage pipeline.
+    """
+    record = lookup_error(code)
+    if not record:
+        raise HTTPException(status_code=404, detail="Error code not found")
+    return record
+
+
+@app.get("/debug/actuator/{prefix}")
+async def debug_actuator(prefix: str):
+    """
+    Lightweight helper for checking actuator prefix normalization.
+    """
+    record = lookup_actuator(prefix)
+    if not record:
+        raise HTTPException(status_code=404, detail="Actuator prefix not found")
+    return record
 
 if __name__ == "__main__":
     import uvicorn
