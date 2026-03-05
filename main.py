@@ -303,7 +303,6 @@ def call_diagnostic_parser(question: str) -> ParsedDiagnostics:
     response = client.responses.create(
         model=PARSER_MODEL,
         input=messages,
-        response_format={"type": "json_schema", "json_schema": PARSER_JSON_SCHEMA},
     )
     raw = _extract_json_from_response(response)
     parsed = ParsedDiagnostics(
