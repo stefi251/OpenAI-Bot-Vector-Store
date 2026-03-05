@@ -82,6 +82,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "admin_stats": "Admin Stats",
         "feedback_prompt": "Was this response helpful?",
         "language_select_label": "Language",
+        "missing_prefix_title": "Need actuator ID",
+        "missing_prefix_body": "Please provide the numeric prefix from the actuator nameplate (e.g., 280) before we continue troubleshooting.",
+        "back_button": "Return Home",
     },
     "sk": {
         "lang_label": "Slovenčina",
@@ -100,6 +103,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "admin_stats": "Admin štatistiky",
         "feedback_prompt": "Bola odpoveď užitočná?",
         "language_select_label": "Jazyk",
+        "missing_prefix_title": "Potrebujeme identifikáciu pohonu",
+        "missing_prefix_body": "Zadajte prosím číselný prefix zo štítku servopohonu (napr. 280), až potom môžeme pokračovať v diagnostike.",
+        "back_button": "Späť domov",
     },
     "ru": {
         "lang_label": "Русский",
@@ -118,8 +124,20 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "admin_stats": "Админ статистика",
         "feedback_prompt": "Ответ был полезным?",
         "language_select_label": "Язык",
+        "missing_prefix_title": "Нужен номер привода",
+        "missing_prefix_body": "Пожалуйста, укажите цифровой префикс с шильдика привода (например, 280), после этого мы продолжим диагностику.",
+        "back_button": "Вернуться",
     },
 }
+
+
+def language_options_html(selected_lang: str) -> str:
+    options = []
+    for code in LANGUAGE_CONFIG:
+        label = TRANSLATIONS.get(code, {}).get("lang_label", code.upper())
+        selected_attr = " selected" if code == selected_lang else ""
+        options.append(f'<option value="{code}"{selected_attr}>{html.escape(label)}</option>')
+    return "".join(options)
 PARSER_SYSTEM_PROMPT = """
 You are a diagnostic parser for an industrial actuator support system.
 Your task is ONLY to extract structured diagnostic information from the user message.
@@ -458,7 +476,9 @@ def _contact_card_html() -> str:
     """
 
 @app.get("/", response_class=HTMLResponse)
-async def html_form():
+async def html_form(lang: str = DEFAULT_LANGUAGE):
+    selected_lang = resolve_language(lang)
+    translations = get_translations(selected_lang)
     conversation_id = str(uuid.uuid4())
     with conversation_lock:
         conversation_state[conversation_id] = {"last_response_id": None}
@@ -468,6 +488,8 @@ async def html_form():
         captcha_block = f'<div class=\"g-recaptcha\" data-sitekey=\"{RECAPTCHA_SITE_KEY}\"></div>'
         captcha_script = '<script src=\"https://www.google.com/recaptcha/api.js\" async defer></script>'
     contact_html = _contact_card_html()
+    lang_options = language_options_html(selected_lang)
+    t = {key: html.escape(value) for key, value in translations.items()}
     return HTMLResponse(
         f"""
     <html>
@@ -498,18 +520,13 @@ async def html_form():
                 box-shadow:0 10px 30px rgba(15,66,118,0.08);
                 padding:32px;
             }}
-            .hero-card h2 {{
-                color:#0e4da1;
-                margin-top:0;
-                margin-bottom:12px;
-                font-weight:700;
+            .form-row {{
+                margin-bottom:16px;
+                display:flex;
+                flex-direction:column;
+                gap:8px;
             }}
-            .hero-card p {{
-                margin-top:0;
-                color:#4b5563;
-                line-height:1.6;
-            }}
-            .hero-card textarea {{
+            textarea {{
                 width:100%;
                 border:1px solid #dbe2ec;
                 border-radius:8px;
@@ -519,7 +536,12 @@ async def html_form():
                 min-height:140px;
                 resize:vertical;
                 box-sizing:border-box;
-                margin-bottom:16px;
+            }}
+            select {{
+                border:1px solid #dbe2ec;
+                border-radius:8px;
+                padding:10px;
+                font-size:15px;
             }}
             .primary-btn {{
                 background:#0066cc;
@@ -534,39 +556,6 @@ async def html_form():
             .contact-panel {{
                 flex:1 1 260px;
             }}
-            .contact-card {{
-                background:#e9eff7;
-                border-radius:12px;
-                padding:24px;
-                box-shadow:0 10px 25px rgba(14,77,161,0.08);
-            }}
-            .contact-card h3 {{
-                margin-top:0;
-                color:#0e4da1;
-            }}
-            .contact-greeting {{
-                margin:8px 0 14px;
-                color:#24324c;
-                line-height:1.4;
-            }}
-            .contact-name {{
-                font-weight:600;
-                color:#1c2028;
-            }}
-            .contact-meta {{
-                color:#24324c;
-                margin-bottom:4px;
-            }}
-            .contact-button {{
-                display:inline-block;
-                margin-top:12px;
-                background:#0066cc;
-                color:#fff;
-                padding:10px 18px;
-                border-radius:6px;
-                text-decoration:none;
-                font-weight:600;
-            }}
             @media (max-width:768px) {{
                 .page-shell {{
                     padding:30px 16px;
@@ -578,13 +567,21 @@ async def html_form():
     <body>
         <div class=\"page-shell\">
             <div class=\"hero-card\">
-                <h2>Regada servis – AI asistent</h2>
-                <p>Napíšte problém so servopohonom alebo ventilom a RegAdam vás prevedie ďalším postupom.</p>
+                <h2>{t["landing_title"]}</h2>
+                <p>{t["landing_intro"]}</p>
                 <form action=\"/ask\" method=\"post\">
-                    <textarea name=\"question\" placeholder=\"Popíšte problém, napr. „motor hučí a svieti E17“\"></textarea>
+                    <div class=\"form-row\">
+                        <label for=\"lang-select\">{t["language_select_label"]}</label>
+                        <select id=\"lang-select\" name=\"lang\">
+                            {lang_options}
+                        </select>
+                    </div>
+                    <div class=\"form-row\">
+                        <textarea name=\"question\" placeholder=\"{t["textarea_placeholder"]}\"></textarea>
+                    </div>
                     <input type=\"hidden\" name=\"thread_id\" value=\"{conversation_id}\">
                     {captcha_block}
-                    <button type=\"submit\" class=\"primary-btn\">Spustiť asistenta</button>
+                    <button type=\"submit\" class=\"primary-btn\">{t["submit_button"]}</button>
                 </form>
             </div>
             <div class=\"contact-panel\">
@@ -599,6 +596,7 @@ async def html_form():
 async def ask(
     request: Request,
     question: str = Form(...),
+    lang: str = Form(DEFAULT_LANGUAGE),
     thread_id: str = Form(None),
     captcha_token: Optional[str] = Form(None, alias="g-recaptcha-response"),
 ):  # noqa: PLR0912
@@ -626,6 +624,8 @@ async def ask(
         """,
             status_code=400,
         )
+
+    selected_lang = resolve_language(lang)
 
     if question is None:
         return HTMLResponse(
@@ -692,8 +692,56 @@ async def ask(
             status_code=400,
         )
 
+    try:
+        diagnostic_context = build_diagnostic_context(cleaned_question)
+    except OpenAIError as exc:
+        logger.error(f"Parser API error: {exc}")
+        return HTMLResponse(
+            content="""
+        <html><body style='padding:20px;font-family:sans-serif;'>
+            <h3>⚠️ Service Temporarily Unavailable</h3>
+            <p>We're experiencing connectivity issues. Please try again shortly.</p>
+            <a href='/'>← Return Home</a>
+        </body></html>
+        """,
+            status_code=503,
+        )
+    except Exception as exc:
+        logger.error(f"Parser failure: {exc}")
+        return HTMLResponse(
+            content="""
+        <html><body style='padding:20px;font-family:sans-serif;'>
+            <h3>⚠️ System Error</h3>
+            <p>An unexpected error occurred while preparing your request.</p>
+            <a href='/'>← Return Home</a>
+        </body></html>
+        """,
+            status_code=500,
+        )
+
+    response_language = resolve_language(diagnostic_context.parsed.language or selected_lang)
     history_entries = _load_conversation_history(conversation_id)
     previous_response_id = state.get("last_response_id")
+    translations = get_translations(response_language)
+
+    if needs_prefix_request(diagnostic_context):
+        t_safe = {key: html.escape(value) for key, value in translations.items()}
+        safe_question = html.escape(cleaned_question)
+        lang_param = html.escape(response_language)
+        return HTMLResponse(
+            content=f"""
+        <html><body style='padding:20px;font-family:sans-serif;background:#f5f5f5;'>
+            <div style="max-width:640px;margin:0 auto;background:#fff;padding:30px;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,0.08);">
+                <div style="text-transform:uppercase;font-size:12px;color:#6c757d;margin-bottom:8px;">{t_safe["language_select_label"]}: {t_safe["lang_label"]}</div>
+                <h2>{t_safe["missing_prefix_title"]}</h2>
+                <p>{t_safe["missing_prefix_body"]}</p>
+                <p><b>{safe_question}</b></p>
+                <a href="/?lang={lang_param}" style="display:inline-block;margin-top:16px;padding:10px 18px;border-radius:8px;background:#0066cc;color:#fff;text-decoration:none;">{t_safe["back_button"]}</a>
+            </div>
+        </body></html>
+        """,
+            status_code=200,
+        )
 
     def _create_response():
         request_kwargs = {
@@ -805,6 +853,7 @@ async def ask(
         citations_html = "<h4>References:</h4><ul>" + "".join(
             f"<li>{c}</li>" for c in sorted(file_citations)
         ) + "</ul>"
+
     safe_question = html.escape(cleaned_question)
     safe_answer = html.escape(answer_text)
     safe_thread_id = html.escape(conversation_id)
@@ -816,55 +865,67 @@ async def ask(
     if RECAPTCHA_SITE_KEY:
         captcha_block = f'<div class="g-recaptcha" data-sitekey="{RECAPTCHA_SITE_KEY}"></div>'
         captcha_script = '<script src="https://www.google.com/recaptcha/api.js" async defer></script>'
-    contact_html = _contact_card_html()
 
-    return HTMLResponse(content=f"""
+    lang_badge = html.escape(TRANSLATIONS.get(response_language, {}).get("lang_label", response_language.upper()))
+    lang_param = html.escape(response_language)
+    contact_html = _contact_card_html()
+    t_safe = {key: html.escape(value) for key, value in translations.items()}
+
+    page_html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
+        <title>{t_safe["landing_title"]}</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Regada servis – AI asistent</title>
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
         <style>
             body {{
-                font-family:'Montserrat', sans-serif;
-                background:#f4f6f9;
                 margin:0;
+                background:#f5f6fb;
+                font-family:'Montserrat', sans-serif;
                 color:#1c2028;
             }}
             .page-shell {{
                 max-width:1100px;
                 margin:0 auto;
-                padding:40px 20px 60px;
+                padding:40px 20px;
                 display:flex;
                 gap:24px;
                 flex-wrap:wrap;
             }}
             .primary-column {{
-                flex:1 1 680px;
+                flex:1 1 640px;
                 display:flex;
                 flex-direction:column;
                 gap:24px;
             }}
             .card {{
                 background:#fff;
-                border-radius:12px;
-                box-shadow:0 15px 35px rgba(10,57,101,0.08);
+                border-radius:14px;
                 padding:28px;
+                box-shadow:0 12px 30px rgba(4,32,96,0.08);
             }}
-            .card h1, .card h2, .card h3 {{
+            .lang-chip {{
+                display:inline-block;
+                padding:6px 12px;
+                border-radius:20px;
+                background:#e3ebff;
                 color:#0e4da1;
-                margin-top:0;
+                font-size:13px;
+                font-weight:600;
+                margin-bottom:10px;
             }}
             .history-block {{
                 background:#f5f7fb;
                 border-radius:10px;
-                padding:18px;
-                border:1px solid #dfe6f2;
-                min-height:100px;
+                padding:16px;
+                line-height:1.6;
+                max-height:240px;
+                overflow:auto;
+                border:1px solid #e0e7f6;
             }}
             .response-box {{
                 background:#eef5ff;
@@ -902,60 +963,22 @@ async def ask(
             textarea {{
                 width:100%;
                 border:1px solid #dbe2ec;
-                border-radius:8px;
+                border-radius:10px;
                 padding:14px;
-                font-size:16px;
                 font-family:'Montserrat', sans-serif;
+                font-size:15px;
                 min-height:120px;
-                resize:vertical;
                 box-sizing:border-box;
+                resize:vertical;
             }}
             .contact-panel {{
                 flex:1 1 260px;
             }}
-            .contact-card {{
-                background:#e9eff7;
-                border-radius:12px;
-                padding:24px;
-                box-shadow:0 10px 25px rgba(14,77,161,0.08);
-            }}
-            .contact-card h3 {{
-                margin-top:0;
-                color:#0e4da1;
-            }}
-            .contact-greeting {{
-                margin:8px 0 14px;
-                color:#24324c;
-                line-height:1.4;
-            }}
-            .contact-name {{
-                font-weight:600;
-                color:#1c2028;
-            }}
-            .contact-meta {{
-                color:#24324c;
-                margin-bottom:4px;
-            }}
-            .contact-button {{
-                display:inline-block;
-                margin-top:12px;
-                background:#0066cc;
-                color:#fff;
-                padding:10px 18px;
-                border-radius:6px;
-                text-decoration:none;
-                font-weight:600;
-            }}
             .notice {{
-                background:#fef2d7;
-                border-radius:10px;
-                padding:14px;
-                color:#8b5a06;
-                margin-top:16px;
                 display:none;
-            }}
-            @media (max-width:768px) {{
-                .page-shell {{ padding:30px 16px; }}
+                margin-top:12px;
+                padding:12px 16px;
+                border-radius:8px;
             }}
         </style>
         {captcha_script}
@@ -965,38 +988,42 @@ async def ask(
             <div class="primary-column">
                 <div class="card">
                     <input type="hidden" id="conversation-id" value="{safe_thread_id}">
-                    <h1>Regada servis – AI asistent</h1>
+                    <div class="lang-chip">{lang_badge}</div>
+                    <h1>{t_safe["landing_title"]}</h1>
+                    <h3>{t_safe["conversation_history"]}</h3>
                     <div class="history-block">{chat_html}</div>
                 </div>
                 <div class="card">
-                    <h3>Aktuálna otázka</h3>
+                    <h3>{t_safe["your_question"]}</h3>
                     <p><strong>{safe_question}</strong></p>
-                    <h3>Odpoveď asistenta</h3>
+                    <h3>{t_safe["assistant_response"]}</h3>
                     <div class="response-box">{safe_answer}</div>
                     {safe_citations}
                 </div>
                 <div class="card">
-                    <h3>Ďalšie kroky</h3>
-                    <p>Pomohli sme vám? Dajte nám vedieť a pokračujte v konverzácii alebo eskalujte na servis.</p>
+                    <h3>{t_safe["continue_conversation"]}</h3>
+                    <p>{t_safe["feedback_prompt"]}</p>
                     <div class="feedback-actions">
-                        <button type="button" onclick="submitFeedback(1)" class="btn btn-outline" id="btn-helpful" {feedback_disabled_attr}>👍 Bolo to užitočné</button>
-                        <button type="button" onclick="submitFeedback(-1)" class="btn btn-outline danger" id="btn-not-helpful" {feedback_disabled_attr}>👎 Nepomohlo</button>
+                        <button type="button" onclick="submitFeedback(1)" class="btn btn-outline" id="btn-helpful" {feedback_disabled_attr}>{t_safe["helpful"]}</button>
+                        <button type="button" onclick="submitFeedback(-1)" class="btn btn-outline danger" id="btn-not-helpful" {feedback_disabled_attr}>{t_safe["not_helpful"]}</button>
                     </div>
                     <div id="feedback-result" class="notice"></div>
                     <form action="/ask" method="post" style="margin-top:20px;">
-                        <textarea name="question" placeholder="Napíšte doplňujúcu otázku..." required></textarea>
+                        <textarea name="question" placeholder="{t_safe["textarea_placeholder"]}" required></textarea>
                         <input type="hidden" name="thread_id" value="{safe_thread_id}">
+                        <input type="hidden" name="lang" value="{lang_param}">
                         {captcha_block}
-                        <button type="submit" class="btn btn-solid" style="margin-top:12px;">Odoslať ďalšiu otázku</button>
+                        <button type="submit" class="btn btn-solid" style="margin-top:12px;">{t_safe["continue_conversation"]}</button>
                     </form>
                     <div class="feedback-actions" style="margin-top:20px;">
                         <form action="/escalate" method="post">
                             <input type="hidden" name="thread_id" value="{safe_thread_id}">
                             <input type="hidden" name="history_blob" value="{history_blob}">
-                            <button type="submit" class="btn btn-outline" {"disabled" if not conversation_id else ""}>Eskalovať na Regada servis</button>
+                            <input type="hidden" name="lang" value="{lang_param}">
+                            <button type="submit" class="btn btn-outline" {"disabled" if not conversation_id else ""}>{t_safe["escalate"]}</button>
                         </form>
-                        <a href="/" class="btn btn-outline">Nová konverzácia</a>
-                        <a href="/stats" class="btn btn-outline">Admin štatistiky</a>
+                        <a href="/?lang={lang_param}" class="btn btn-outline">{t_safe["new_convo"]}</a>
+                        <a href="/stats" class="btn btn-outline">{t_safe["admin_stats"]}</a>
                     </div>
                 </div>
             </div>
@@ -1012,7 +1039,7 @@ async def ask(
                 const feedbackResult = document.getElementById('feedback-result');
                 if (!threadId) {{
                     feedbackResult.style.display = 'block';
-                    feedbackResult.innerHTML = 'Hodnotenie bude dostupné po prvej odpovedi.';
+                    feedbackResult.innerHTML = 'Feedback is available after the first answer.';
                     return;
                 }}
                 helpfulBtn.disabled = true;
@@ -1022,27 +1049,18 @@ async def ask(
                 formData.append('rating', rating);
                 formData.append('comment', rating > 0 ? 'helpful' : 'not-helpful');
                 fetch('/feedback', {{method: 'POST', body: formData}})
-                .then(response => response.json().catch(() => ({{}})))
-                .then(data => {{
-                    if (data.status === 'ok') {{
-                        feedbackResult.style.display = 'block';
-                        feedbackResult.style.background = '#dff5e2';
-                        feedbackResult.style.color = '#166534';
-                        feedbackResult.innerHTML = 'Ďakujeme za hodnotenie!';
-                    }} else {{
-                        feedbackResult.style.display = 'block';
-                        feedbackResult.style.background = '#fde2e2';
-                        feedbackResult.style.color = '#7a1f1f';
-                        feedbackResult.innerHTML = 'Nepodarilo sa uložiť spätnú väzbu.';
-                        helpfulBtn.disabled = false;
-                        notHelpfulBtn.disabled = false;
-                    }}
+                .then(response => response.text())
+                .then(() => {{
+                    feedbackResult.style.display = 'block';
+                    feedbackResult.style.background = '#dff5e2';
+                    feedbackResult.style.color = '#166534';
+                    feedbackResult.innerHTML = 'Thank you for your feedback!';
                 }})
-                .catch(error => {{
+                .catch(() => {{
                     feedbackResult.style.display = 'block';
                     feedbackResult.style.background = '#fde2e2';
                     feedbackResult.style.color = '#7a1f1f';
-                    feedbackResult.innerHTML = 'Chyba pri odoslaní hodnotenia.';
+                    feedbackResult.innerHTML = 'Error submitting feedback.';
                     helpfulBtn.disabled = false;
                     notHelpfulBtn.disabled = false;
                 }});
@@ -1050,7 +1068,10 @@ async def ask(
         </script>
     </body>
     </html>
-    """)
+    """
+
+    return HTMLResponse(content=page_html)
+
 
 @app.post("/feedback")
 async def feedback(request: Request, thread_id: str = Form(...), rating: int = Form(...), comment: str = Form(None)):
