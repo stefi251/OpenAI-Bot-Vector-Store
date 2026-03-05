@@ -286,7 +286,16 @@ def _extract_json_from_response(response) -> Dict[str, Any]:
         for content in item.get("content", []):
             if "json" in content:
                 return content["json"]
-            text_value = content.get("text")
+            text_payload = content.get("text")
+            text_value = ""
+            if isinstance(text_payload, dict):
+                text_value = text_payload.get("value", "")
+            elif isinstance(text_payload, str):
+                text_value = text_payload
+            if not text_value and isinstance(content, dict):
+                candidate = content.get("value")
+                if isinstance(candidate, str):
+                    text_value = candidate
             if text_value:
                 try:
                     return json.loads(text_value)
