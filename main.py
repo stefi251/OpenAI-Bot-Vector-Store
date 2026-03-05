@@ -7,12 +7,11 @@ import json
 import os
 import threading
 import time
-import uuid
 from base64 import b64decode, b64encode
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 import httpx
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -328,6 +327,122 @@ def build_diagnostic_context(question: str) -> DiagnosticContext:
 
 def needs_prefix_request(context: DiagnosticContext) -> bool:
     return context.parsed.actuator_number_prefix is None
+
+
+def _build_user_message(question: str, context: DiagnosticContext) -> List[Dict[str, str]]:
+    payload = json.dumps(context.to_payload(), ensure_ascii=False)
+    return [
+        {"type": "text", "text": question},
+        {"type": "text", "text": f"Structured diagnostics JSON:\n{payload}"},
+    ]
+
+
+def _resolve_file_name(file_id: Optional[str]) -> str:
+    if not file_id:
+        return "Reference"
+    try:
+        file_info = client.files.retrieve(file_id)
+        return file_info.filename or f"File ID {file_id}"
+    except Exception:
+        return f"File ID {file_id}"
+
+
+def _format_citations(annotation: Dict[str, Any]) -> str:
+    citation = annotation.get("file_citation", {})
+    file_id = citation.get("file_id")
+    quote = citation.get("quote", "")
+    filename = _resolve_file_name(file_id)
+    filename_safe = html.escape(str(filename))
+    quote_safe = html.escape(quote)
+    return filename_safe + (f' ("{quote_safe}")' if quote_safe else "")
+
+
+def _extract_answer_from_message(message) -> Tuple[str, str]:
+    if not message:
+        return "[No answer returned]", ""
+    message_dict = message.model_dump()
+    parts: List[str] = []
+    citations: Set[str] = set()
+    for item in message_dict.get("content", []):
+        if item.get("type") != "text":
+            continue
+        text_payload = item.get("text") or {}
+        text_value = text_payload.get("value")
+        if text_value:
+            parts.append(text_value)
+        for ann in text_payload.get("annotations") or []:
+            if ann.get("type") == "file_citation":
+                citations.add(_format_citations(ann))
+    answer_text = "\n\n".join(parts).strip() or "[No answer returned]"
+    citations_html = ""
+    if citations:
+        citations_html = "<h4>References:</h4><ul>" + "".join(f"<li>{c}</li>" for c in sorted(citations)) + "</ul>"
+    return answer_text, citations_html
+
+
+async def run_language_assistant(
+    question: str,
+    lang: str,
+    diagnostic_context: DiagnosticContext,
+    existing_thread_id: Optional[str],
+) -> Tuple[str, str, str]:
+    cfg = get_language_config(lang)
+    assistant_id = cfg["assistant_id"]
+    vector_store_id = cfg["vector_store_id"]
+
+    user_content = _build_user_message(question, diagnostic_context)
+
+    if existing_thread_id:
+        thread_id = existing_thread_id
+        await asyncio.to_thread(
+            client.beta.threads.messages.create,
+            thread_id=thread_id,
+            role="user",
+            content=user_content,
+        )
+    else:
+        thread = await asyncio.to_thread(
+            client.beta.threads.create,
+            messages=[
+                {
+                    "role": "user",
+                    "content": user_content,
+                }
+            ],
+        )
+        thread_id = thread.id
+
+    run_kwargs = {
+        "thread_id": thread_id,
+        "assistant_id": assistant_id,
+    }
+    if vector_store_id:
+        run_kwargs["tool_resources"] = {
+            "file_search": {"vector_store_ids": [vector_store_id]}
+        }
+    run = await asyncio.to_thread(client.beta.threads.runs.create, **run_kwargs)
+
+    start_time = time.time()
+    timeout = 60
+    while True:
+        run_status = await asyncio.to_thread(
+            client.beta.threads.runs.retrieve,
+            thread_id=thread_id,
+            run_id=run.id,
+        )
+        if run_status.status == "completed":
+            break
+        if run_status.status in {"failed", "cancelled", "expired"}:
+            raise RuntimeError(f"Assistant run {run_status.status}")
+        if time.time() - start_time > timeout:
+            raise TimeoutError("Assistant response timeout.")
+        await asyncio.sleep(1)
+
+    messages = await asyncio.to_thread(client.beta.threads.messages.list, thread_id=thread_id)
+    msgs_sorted = sorted(messages.data, key=lambda m: m.created_at)
+    answer_msg = next((m for m in reversed(msgs_sorted) if m.role == "assistant"), None)
+    answer_text, citations_html = await asyncio.to_thread(_extract_answer_from_message, answer_msg)
+    return thread_id, answer_text, citations_html
 RECAPTCHA_SITE_KEY = os.getenv("RECAPTCHA_SITE_KEY")
 RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY")
 ASK_RATE_LIMIT_MAX = int(os.getenv("ASK_RATE_LIMIT_MAX", "5"))
@@ -338,8 +453,6 @@ LOG_FILE = "chat_metrics.csv"
 FEEDBACK_LOG_FILE = "feedback_metrics.csv"
 
 CSV_LOCK = threading.Lock()
-conversation_state: Dict[str, Dict[str, Optional[str]]] = {}
-conversation_lock = threading.Lock()
 rate_limit_lock = threading.Lock()
 rate_limit_data: Dict[str, Deque[float]] = defaultdict(deque)
 
@@ -479,9 +592,6 @@ def _contact_card_html() -> str:
 async def html_form(lang: str = DEFAULT_LANGUAGE):
     selected_lang = resolve_language(lang)
     translations = get_translations(selected_lang)
-    conversation_id = str(uuid.uuid4())
-    with conversation_lock:
-        conversation_state[conversation_id] = {"last_response_id": None}
     captcha_block = ""
     captcha_script = ""
     if RECAPTCHA_SITE_KEY:
@@ -579,7 +689,7 @@ async def html_form(lang: str = DEFAULT_LANGUAGE):
                     <div class=\"form-row\">
                         <textarea name=\"question\" placeholder=\"{t["textarea_placeholder"]}\"></textarea>
                     </div>
-                    <input type=\"hidden\" name=\"thread_id\" value=\"{conversation_id}\">
+                    <input type=\"hidden\" name=\"thread_id\" value=\"\">
                     {captcha_block}
                     <button type=\"submit\" class=\"primary-btn\">{t["submit_button"]}</button>
                 </form>
@@ -665,33 +775,6 @@ async def ask(
             status_code=400,
         )
 
-    conversation_id = (thread_id or "").strip()
-    if not conversation_id:
-        return HTMLResponse(
-            content="""
-        <html><body style='padding:20px;font-family:sans-serif;'>
-            <h3>⚠️ Session Expired</h3>
-            <p>Please start a new conversation.</p>
-            <a href='/'>← Return Home</a>
-        </body></html>
-        """,
-            status_code=400,
-        )
-
-    with conversation_lock:
-        state = conversation_state.get(conversation_id)
-    if state is None:
-        return HTMLResponse(
-            content="""
-        <html><body style='padding:20px;font-family:sans-serif;'>
-            <h3>⚠️ Unknown Conversation</h3>
-            <p>The conversation ID is invalid or has expired. Please start a new chat.</p>
-            <a href='/'>← Return Home</a>
-        </body></html>
-        """,
-            status_code=400,
-        )
-
     try:
         diagnostic_context = build_diagnostic_context(cleaned_question)
     except OpenAIError as exc:
@@ -720,8 +803,8 @@ async def ask(
         )
 
     response_language = resolve_language(diagnostic_context.parsed.language or selected_lang)
-    history_entries = _load_conversation_history(conversation_id)
-    previous_response_id = state.get("last_response_id")
+    thread_id_value = (thread_id or "").strip()
+    history_entries = _load_conversation_history(thread_id_value)
     translations = get_translations(response_language)
 
     if needs_prefix_request(diagnostic_context):
@@ -743,26 +826,15 @@ async def ask(
             status_code=200,
         )
 
-    def _create_response():
-        request_kwargs = {
-            "model": REGADAM_MODEL,
-            "instructions": SYSTEM_PROMPT,
-            "input": [{"role": "user", "content": cleaned_question}],
-            "store": True,
-        }
-        if previous_response_id:
-            request_kwargs["previous_response_id"] = previous_response_id
-        if VECTOR_STORE_ID:
-            request_kwargs["tools"] = [
-                {
-                    "type": "file_search",
-                    "vector_store_ids": [VECTOR_STORE_ID],
-                }
-            ]
-        return client.responses.create(**request_kwargs)
-
     try:
-        response = await asyncio.to_thread(_create_response)
+        thread_id_value, answer_text, citations_html = await run_language_assistant(
+            cleaned_question,
+            response_language,
+            diagnostic_context,
+            thread_id_value,
+        )
+    except TimeoutError:
+        return HTMLResponse(content="Assistant response timeout. Please try again later.", status_code=504)
     except OpenAIError as exc:
         logger.error(f"OpenAI API error: {exc}")
         return HTMLResponse(
@@ -789,46 +861,9 @@ async def ask(
             status_code=500,
         )
 
-    response_id = getattr(response, "id", "")
-    with conversation_lock:
-        if conversation_id in conversation_state:
-            conversation_state[conversation_id]["last_response_id"] = response_id or conversation_state[conversation_id].get("last_response_id")
-    response_payload = response.model_dump()
-    answer_parts: List[str] = []
-    file_citations: Set[str] = set()
-
-    for item in response_payload.get("output", []) or []:
-        for content in item.get("content", []) or []:
-            text_value = content.get("text")
-            if text_value:
-                answer_parts.append(text_value)
-            for annotation in content.get("annotations") or []:
-                if annotation.get("type") == "file_citation":
-                    citation = annotation.get("file_citation", {})
-                    file_id = citation.get("file_id")
-                    quote_part = citation.get("quote") or ""
-                    filename = f"File ID {file_id}" if file_id else "Reference"
-                    if file_id:
-                        try:
-                            file_info = await asyncio.to_thread(
-                                client.files.retrieve,
-                                file_id,
-                            )
-                            filename = file_info.filename
-                        except Exception:
-                            filename = f"File ID {file_id}"
-                    filename_safe = html.escape(str(filename))
-                    quote_safe = html.escape(quote_part)
-                    citation_text = (
-                        f"{filename_safe}" + (f" (\"{quote_safe}\")" if quote_safe else "")
-                    )
-                    file_citations.add(citation_text)
-
-    answer_text = "\n\n".join(answer_parts).strip() or "[No answer returned]"
-
     log_row = [
         datetime.now().isoformat(),
-        _sanitize_csv_value(conversation_id),
+        _sanitize_csv_value(thread_id_value),
         _sanitize_csv_value(cleaned_question),
         _sanitize_csv_value(answer_text),
     ]
@@ -848,17 +883,11 @@ async def ask(
     ]
     chat_html = _render_chat_html(history_with_current)
 
-    citations_html = ""
-    if file_citations:
-        citations_html = "<h4>References:</h4><ul>" + "".join(
-            f"<li>{c}</li>" for c in sorted(file_citations)
-        ) + "</ul>"
-
     safe_question = html.escape(cleaned_question)
     safe_answer = html.escape(answer_text)
-    safe_thread_id = html.escape(conversation_id)
+    safe_thread_id = html.escape(thread_id_value)
     safe_citations = citations_html
-    feedback_disabled_attr = "" if conversation_id else "disabled"
+    feedback_disabled_attr = "" if thread_id_value else "disabled"
     history_blob = b64encode(json.dumps(history_with_current).encode("utf-8")).decode("ascii")
     captcha_block = ""
     captcha_script = ""
@@ -1020,7 +1049,7 @@ async def ask(
                             <input type="hidden" name="thread_id" value="{safe_thread_id}">
                             <input type="hidden" name="history_blob" value="{history_blob}">
                             <input type="hidden" name="lang" value="{lang_param}">
-                            <button type="submit" class="btn btn-outline" {"disabled" if not conversation_id else ""}>{t_safe["escalate"]}</button>
+                            <button type="submit" class="btn btn-outline" {"disabled" if not thread_id_value else ""}>{t_safe["escalate"]}</button>
                         </form>
                         <a href="/?lang={lang_param}" class="btn btn-outline">{t_safe["new_convo"]}</a>
                         <a href="/stats" class="btn btn-outline">{t_safe["admin_stats"]}</a>
@@ -1079,9 +1108,6 @@ async def feedback(request: Request, thread_id: str = Form(...), rating: int = F
     if not _check_rate_limit(f"feedback:{client_host}", FEEDBACK_RATE_LIMIT_MAX, FEEDBACK_RATE_LIMIT_WINDOW):
         return JSONResponse({"status": "error", "detail": "Too many feedback submissions"}, status_code=429)
     thread_id = (thread_id or "").strip()
-    with conversation_lock:
-        if thread_id not in conversation_state:
-            return JSONResponse({"status": "error", "detail": "Unknown conversation"}, status_code=400)
     feedback_row = [
         datetime.now().isoformat(),
         _sanitize_csv_value(thread_id),
@@ -1105,12 +1131,6 @@ async def feedback(request: Request, thread_id: str = Form(...), rating: int = F
 @app.post("/escalate")
 async def escalate(thread_id: str = Form(...), history_blob: str = Form(None)):
     conversation_id = (thread_id or "").strip()
-    with conversation_lock:
-        if conversation_id not in conversation_state:
-            return HTMLResponse(
-                content="<p>No conversation history found for escalation.</p>",
-                status_code=404,
-            )
     history_entries = _load_conversation_history(conversation_id)
     if not history_entries and history_blob:
         try:
