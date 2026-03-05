@@ -7,3 +7,4 @@ __pycache__/
 .DS_Store
 mcp-server-demo/
 mcp-servers-archived/
+data/private/
