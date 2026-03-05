@@ -76,19 +76,24 @@ def load_error_table() -> pd.DataFrame:
 def load_actuator_table() -> pd.DataFrame:
     """Return the normalized actuator tree dataframe."""
     # First row is a textual label, skip it.
-    raw_df = _read_csv_from_env("ACTUATOR_TREE_PATH", sep=";")
+    path = os.getenv("ACTUATOR_TREE_PATH")
+    if not path:
+        raise DataSourceError("ACTUATOR_TREE_PATH is not set")
+    file_path = Path(path)
+    if not file_path.exists():
+        raise DataSourceError(f"ACTUATOR_TREE_PATH points to missing file: {file_path}")
+    raw_df = pd.read_csv(
+        file_path,
+        sep=";",
+        encoding="utf-8",
+        engine="python",
+        skiprows=1,  # skip 'Table 1'
+    )
     if raw_df.empty:
         raise DataSourceError("Actuator tree CSV is empty")
-    # Drop initial metadata rows ("Table 1", separators) then promote the first
-    # non-empty row to header.
+    # Remove empty rows and normalize header names.
     raw_df = raw_df.dropna(how="all")
-    while not raw_df.empty and not any(isinstance(val, str) and val.strip() for val in raw_df.iloc[0].tolist()):
-        raw_df = raw_df.iloc[1:]
-    if raw_df.empty:
-        raise DataSourceError("Actuator tree has no header row")
-    header = [str(val).strip(" :").lower() for val in raw_df.iloc[0].tolist()]
-    raw_df = raw_df.iloc[1:]
-    raw_df.columns = header
+    raw_df.columns = [str(col).strip(" :").lower() for col in raw_df.columns]
     raw_df = raw_df.dropna(how="all")
     rename_map = {
         "typové číslo servopohonov": "prefix",
