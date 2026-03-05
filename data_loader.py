@@ -79,12 +79,17 @@ def load_actuator_table() -> pd.DataFrame:
     raw_df = _read_csv_from_env("ACTUATOR_TREE_PATH", sep=";")
     if raw_df.empty:
         raise DataSourceError("Actuator tree CSV is empty")
-    # Some exports add two header rows; drop empty rows and re-assign headers if needed.
-    first_row = raw_df.iloc[0].astype(str)
-    if first_row.str.contains("Typ", case=False).any():
-        raw_df = raw_df.iloc[1:]
+    # Drop initial metadata rows ("Table 1", separators) then promote the first
+    # non-empty row to header.
     raw_df = raw_df.dropna(how="all")
-    raw_df.columns = [col.strip().lower() for col in raw_df.columns]
+    while not raw_df.empty and not any(isinstance(val, str) and val.strip() for val in raw_df.iloc[0].tolist()):
+        raw_df = raw_df.iloc[1:]
+    if raw_df.empty:
+        raise DataSourceError("Actuator tree has no header row")
+    header = [str(val).strip(" :").lower() for val in raw_df.iloc[0].tolist()]
+    raw_df = raw_df.iloc[1:]
+    raw_df.columns = header
+    raw_df = raw_df.dropna(how="all")
     rename_map = {
         "typové číslo servopohonov": "prefix",
         "typove cislo servopohonov": "prefix",
@@ -143,4 +148,3 @@ def lookup_actuator(prefix: Optional[str]) -> Optional[Dict[str, str]]:
         "document": str(row.get("document", "")).strip(),
         "document_page": str(row.get("document_page", "")).strip(),
     }
-
