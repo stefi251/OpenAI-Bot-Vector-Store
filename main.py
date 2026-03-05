@@ -11,7 +11,8 @@ import uuid
 from base64 import b64decode, b64encode
 from collections import defaultdict, deque
 from datetime import datetime
-from typing import Deque, Dict, List, Optional
+from typing import Deque, Dict, List, Optional, Set
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, Form, Request
@@ -844,24 +845,24 @@ async def escalate(thread_id: str = Form(...), history_blob: str = Form(None)):
         if answer_text:
             chat_history_lines.append(f"Assistant: {html.escape(answer_text)}")
     thread_text = "\n".join(chat_history_lines)
+    mailto_body = quote(thread_text)
 
     return HTMLResponse(content=f"""
     <html><body style="font-family:sans-serif;padding:20px;">
     <h2>Escalation Protocol</h2>
     <h4>Chat History:</h4>
     <pre style="background:#f1f1f1;padding:10px">{thread_text}</pre>
-    <p>Môžete skopírovať históriu a poslať e-mail na <a href="mailto:servis@regada.sk?subject=Eskalácia%20RegAdam&body={html.escape(thread_text)}" target="_blank" rel="noopener">servis@regada.sk</a>. Pripomíname: uveďte číslo servopohonu, chybový kód a kontakt.</p>
+    <p>Môžete skopírovať históriu a poslať e-mail na <a href="mailto:servis@regada.sk?subject=Eskalácia%20RegAdam&body={mailto_body}" target="_blank" rel="noopener">servis@regada.sk</a>. Pripomíname: uveďte číslo servopohonu, chybový kód a kontakt.</p>
     <a href='/'>Start new conversation</a>
     </body></html>
     """)
 
 @app.get("/stats")
-async def stats():
+async def stats(request: Request):
     try:
         chat_stats = {"n_chats": 0, "n_questions": 0}
         feedback_stats = {"total": 0, "positive": 0, "negative": 0, "rate": 0}
         require_key = os.getenv("ADMIN_STATS_KEY")
-        provided_key = os.getenv("ADMIN_STATS_KEY_VALUE")
         if require_key and request.headers.get("X-Admin-Stats-Key") != require_key:
             return HTMLResponse(content="<p>Admin statistics are disabled on this deployment.</p>", status_code=403)
         chat_rows = _iter_chat_rows()
