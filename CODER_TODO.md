@@ -24,3 +24,13 @@
    - Introduce per-user/IP rate limits to avoid abuse of OpenAI resources.
    - Add structured logging/metrics for observability.
 
+7. **OpenAI Efficiency**
+   - Switch Stage 2 to streaming or a slower poll cadence to cut the 10+ GET requests currently required per response.
+   - Block new `/ask` submissions on a thread while a run is still “queued/in_progress” (guard added in code, but keep monitoring for edge cases).
+
+8. **Manual Actuator Guidance**
+   - Ensure Slovak/Russian assistants have the SK/RU manuals ingested (e.g., SPO_280_SK) and explicitly search them for LED patterns when no error code exists.
+   - Update prompts to mention LED diagnostics for manual actuators so Stage 2 doesn’t return the generic “not found” response.
+
+9. **Conversation UX**
+   - Improve history labels to show “Prefix 382” / “Error E17” rather than raw snippets, and surface short confirmation messages so users see context instead of one-letter entries.
