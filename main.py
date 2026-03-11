@@ -1367,6 +1367,7 @@ async def escalate(
         if answer_text:
             chat_history_lines.append(f"{html.escape(assistant_label)}: {html.escape(answer_text)}")
     thread_text = "\n".join(chat_history_lines)
+    mailto_body = quote(thread_text)
 
     lang_param = html.escape(selected_lang)
     mailto_body = html.escape(thread_text)
@@ -1388,7 +1389,6 @@ async def stats(request: Request):
         chat_stats = {"n_chats": 0, "n_questions": 0}
         feedback_stats = {"total": 0, "positive": 0, "negative": 0, "rate": 0}
         require_key = os.getenv("ADMIN_STATS_KEY")
-        provided_key = os.getenv("ADMIN_STATS_KEY_VALUE")
         if require_key and request.headers.get("X-Admin-Stats-Key") != require_key:
             return HTMLResponse(content="<p>Admin statistics are disabled on this deployment.</p>", status_code=403)
         chat_rows = _iter_chat_rows()
