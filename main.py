@@ -233,52 +233,6 @@ def language_options_html(selected_lang: str) -> str:
         selected_attr = " selected" if code == selected_lang else ""
         options.append(f'<option value="{code}"{selected_attr}>{html.escape(label)}</option>')
     return "".join(options)
-PARSER_SYSTEM_PROMPT = """
-You are a deterministic diagnostic parser for an industrial actuator support system.
-Your ONLY task is to emit a single JSON object with every required key listed below.
-If a field is unknown, set its value to null. Never omit keys and never return an empty object.
-Extract:
-- actuator_number_prefix
-- actuator_model
-- error_code
-- led_pattern
-- symptoms
-- user_question
-- language
-Rules:
-• actuator_number_prefix = digits from the actuator nameplate; strip spaces and non-digits.
-• error_code = numeric portion of error identifiers (remove E/e and leading zeros).
-• If data is not supplied, output null for that key.
-• Do not invent or rephrase user text; user_question must echo the user request verbatim (trimmed).
-• If multiple values exist, pick the most explicit.
-Output strictly in JSON with those keys.
-""".strip()
-PARSER_JSON_SCHEMA = {
-    "name": "diagnostic_parser",
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "actuator_number_prefix": {"type": ["string", "null"]},
-            "actuator_model": {"type": ["string", "null"]},
-            "error_code": {"type": ["string", "null"]},
-            "led_pattern": {"type": ["string", "null"]},
-            "symptoms": {"type": ["string", "null"]},
-            "user_question": {"type": "string"},
-            "language": {"type": ["string", "null"]},
-        },
-        "required": [
-            "actuator_number_prefix",
-            "actuator_model",
-            "error_code",
-            "led_pattern",
-            "symptoms",
-            "user_question",
-            "language",
-        ],
-    },
-}
-
 
 def _validate_language_config() -> None:
     if DEFAULT_LANGUAGE not in LANGUAGE_CONFIG:
@@ -290,6 +244,22 @@ def _validate_language_config() -> None:
     if missing:
         raise RuntimeError(
             f"Missing assistant/vector store IDs for languages: {', '.join(sorted(missing))}"
+        )
+
+
+def _verify_language_vector_stores() -> None:
+    errors = []
+    for lang_code, cfg in LANGUAGE_CONFIG.items():
+        vector_store_id = cfg.get("vector_store_id")
+        if not vector_store_id:
+            continue
+        try:
+            client.vector_stores.retrieve(vector_store_id)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{lang_code}:{vector_store_id} ({exc})")
+    if errors:
+        raise RuntimeError(
+            "Unable to retrieve vector stores: " + ", ".join(errors)
         )
 
 
@@ -314,6 +284,7 @@ def get_translations(lang: Optional[str]) -> Dict[str, str]:
 
 
 _validate_language_config()
+_verify_language_vector_stores()
 
 
 @dataclass
@@ -427,15 +398,9 @@ def actuator_is_intelligent(context: DiagnosticContext) -> bool:
     return _actuator_row_is_intelligent(context.actuator)
 
 
-def needs_error_code(context: DiagnosticContext) -> bool:
-    return actuator_is_intelligent(context)
-
-
 def determine_next_action(context: DiagnosticContext) -> str:
     if not context.parsed.actuator_number_prefix:
         return "need_prefix"
-    if needs_error_code(context) and not context.parsed.error_code:
-        return "need_error"
     return "ready"
 
 
@@ -993,8 +958,6 @@ async def ask(
             answer_text = translations.get("prompt_need_prefix_error", translations["prompt_need_prefix"])
         else:
             answer_text = translations["prompt_need_prefix"]
-    elif action == "need_error":
-        answer_text = translations["prompt_need_error"]
     else:
         if diagnostic_context.parsed.error_code and not actuator_is_intelligent(diagnostic_context):
             answer_text = translations.get("manual_error_mismatch", translations["prompt_need_error"])
@@ -1008,6 +971,7 @@ async def ask(
                     lang_cfg["assistant_id"],
                     user_content,
                     thread_id_value,
+                    lang_cfg["vector_store_id"],
                 )
             except TimeoutError:
                 return HTMLResponse(content="Assistant response timeout. Please try again later.", status_code=504)
@@ -1095,8 +1059,6 @@ async def ask(
     placeholder_key = "textarea_placeholder"
     if action == "need_prefix":
         placeholder_key = "placeholder_need_prefix"
-    elif action == "need_error":
-        placeholder_key = "placeholder_need_error"
     else:
         placeholder_key = "placeholder_followup"
     followup_placeholder = t_safe.get(placeholder_key, t_safe["textarea_placeholder"])

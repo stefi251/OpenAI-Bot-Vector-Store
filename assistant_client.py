@@ -74,6 +74,7 @@ async def run_assistant_request(
     assistant_id: str,
     user_content: List[Dict[str, str]],
     existing_thread_id: Optional[str],
+    vector_store_id: Optional[str],
     *,
     timeout: int = 60,
     poll_interval: float = 2.0,
@@ -89,9 +90,12 @@ async def run_assistant_request(
                 content=user_content,
             )
         else:
+            thread_kwargs = {"messages": [{"role": "user", "content": user_content}]}
+            if vector_store_id:
+                thread_kwargs["tool_resources"] = {"file_search": {"vector_store_ids": [vector_store_id]}}
             thread = await asyncio.to_thread(
                 client.beta.threads.create,
-                messages=[{"role": "user", "content": user_content}],
+                **thread_kwargs,
             )
             thread_id = thread.id
 
