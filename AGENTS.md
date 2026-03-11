@@ -3,6 +3,17 @@
 ## Project Structure & Module Organization
 The FastAPI backend lives in `main.py`; `main2.py`, `main3_f.py`, and `main4.py` are experimental variants – corral new iterations in a dedicated submodule before promoting them to `main.py`. Uploaded chat logs are persisted in `chat_metrics.csv`. `.env` holds secrets such as `OPENAI_API_KEY`. The `mcp-server-demo/servers` workspace mirrors upstream Model Context Protocol servers (TypeScript); use it only for reference or to extend agent integrations, and keep archived variants in `mcp-servers-archived/`.
 
+Shared functionality is broken into helper modules:
+
+| Module | Purpose |
+| --- | --- |
+| `text_utils.py` | Prefix/error normalization, shared regex helpers. |
+| `conversation_state.py` | Single source of truth for known prefix/error/symptom values across turns. |
+| `parser_utils.py` | Stage 1 prompt, retries, and JSON extraction. |
+| `assistant_client.py` | Stage 2 assistant orchestration (thread lifecycle, polling). |
+
+Keep new helpers in `*.py` files rather than expanding `main.py` so FastAPI handlers stay lean.
+
 ## Build, Test, and Development Commands
 Create a virtual environment and install dependencies with `python -m venv .venv && source .venv/bin/activate` followed by `pip install fastapi uvicorn python-dotenv openai pandas`. Run the service locally with `uvicorn main:app --reload`. When hacking on the demo MCP servers, run `npm install` inside `mcp-server-demo/servers` and use `npm run build` to compile all workspaces.
 
@@ -29,3 +40,17 @@ Write commits in the imperative mood with ≤72-character subjects (e.g., `Add e
 
 ## Security & Configuration Tips
 Never commit `.env` or `chat_metrics.csv`—they can contain customer data. Rotate API keys regularly and verify `REGADAM_ID` and `VECTOR_STORE_ID` before deploying. When sharing logs, scrub customer prompts and answers, and prefer read-only service keys in staging environments. Set `ALLOWED_ORIGINS` in the runtime environment (comma-separated) to lock CORS down to approved front-end hosts.
+
+### Multilingual + Parser Environment Variables
+The Stage 1 parser + Stage 2 assistants run per language. Keep these secrets in `.env` (or the host environment) before starting `uvicorn`:
+
+| Variable | Purpose |
+| --- | --- |
+| `PARSER_MODEL` | Responses API model used for Stage 1 JSON extraction (default `gpt-4.1-mini`). |
+| `ASSISTANT_ID_EN`, `ASSISTANT_ID_SK`, `ASSISTANT_ID_RU` | Assistant IDs for English/Slovak/Russian Stage 2 runs. |
+| `VECTOR_STORE_ID_EN`, `VECTOR_STORE_ID_SK`, `VECTOR_STORE_ID_RU` | Matching vector store IDs for retrieval in each language. |
+| `DEFAULT_LANGUAGE` | Fallback UI/assistant language (must match a configured code). |
+| `ERROR_DB_PATH` | Absolute path to the secured CSV with error definitions (e.g., `Chyby EHL1.csv`). |
+| `ACTUATOR_TREE_PATH` | Absolute path to the actuator mapping CSV (e.g., identification tree export). |
+
+To add another language, append a new entry to `LANGUAGE_CONFIG` and `TRANSLATIONS` in `main.py`, set the corresponding assistant/vector store env vars, and restart the app so `_validate_language_config()` can spot misconfigurations early.
