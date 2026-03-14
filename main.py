@@ -320,7 +320,35 @@ class DiagnosticContext:
             "parsed": self.parsed.to_dict(),
             "actuator_lookup": self.actuator,
             "error_lookup": self.error,
+            "manual_targets": _build_manual_targets(self.actuator),
         }
+
+
+
+def _build_manual_targets(actuator: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    if not actuator:
+        return []
+    targets: List[Dict[str, str]] = []
+
+    def _append_target(filename: Optional[str], language: Optional[str]) -> None:
+        if not filename:
+            return
+        lang = (language or "").lower()
+        targets.append(
+            {
+                "filename": filename,
+                "language": lang or "",
+            }
+        )
+
+    primary_manual = actuator.get("primary_manual")
+    primary_lang = actuator.get("primary_manual_language")
+    _append_target(primary_manual, primary_lang)
+
+    for entry in actuator.get("manual_fallbacks", []):
+        _append_target(entry.get("filename"), entry.get("language"))
+
+    return targets
 
 
 
@@ -398,18 +426,38 @@ def actuator_is_intelligent(context: DiagnosticContext) -> bool:
     return _actuator_row_is_intelligent(context.actuator)
 
 
+def needs_error_code(context: DiagnosticContext) -> bool:
+    return actuator_is_intelligent(context)
+
+
 def determine_next_action(context: DiagnosticContext) -> str:
     if not context.parsed.actuator_number_prefix:
         return "need_prefix"
+    if needs_error_code(context) and not context.parsed.error_code:
+        return "need_error"
     return "ready"
 
 
 def _build_user_message(question: str, context: DiagnosticContext) -> List[Dict[str, str]]:
-    payload = json.dumps(context.to_payload(), ensure_ascii=False)
-    return [
+    payload_dict = context.to_payload()
+    payload = json.dumps(payload_dict, ensure_ascii=False)
+    manual_targets = payload_dict.get("manual_targets") or []
+    target_lines = []
+    if manual_targets:
+        target_lines.append("Before responding, run file_search against these manuals (in order):")
+        for entry in manual_targets:
+            filename = entry.get("filename")
+            language = entry.get("language", "").upper()
+            if filename:
+                target_lines.append(f"- {filename} {f'({language})' if language else ''}".strip())
+    manual_instruction = "\n".join(target_lines) if target_lines else ""
+    messages = [
         {"type": "text", "text": question},
         {"type": "text", "text": f"Structured diagnostics JSON:\n{payload}"},
     ]
+    if manual_instruction:
+        messages.append({"type": "text", "text": manual_instruction})
+    return messages
 
 
 RECAPTCHA_SITE_KEY = os.getenv("RECAPTCHA_SITE_KEY")
@@ -958,6 +1006,8 @@ async def ask(
             answer_text = translations.get("prompt_need_prefix_error", translations["prompt_need_prefix"])
         else:
             answer_text = translations["prompt_need_prefix"]
+    elif action == "need_error":
+        answer_text = translations["prompt_need_error"]
     else:
         if diagnostic_context.parsed.error_code and not actuator_is_intelligent(diagnostic_context):
             answer_text = translations.get("manual_error_mismatch", translations["prompt_need_error"])
@@ -1059,6 +1109,8 @@ async def ask(
     placeholder_key = "textarea_placeholder"
     if action == "need_prefix":
         placeholder_key = "placeholder_need_prefix"
+    elif action == "need_error":
+        placeholder_key = "placeholder_need_error"
     else:
         placeholder_key = "placeholder_followup"
     followup_placeholder = t_safe.get(placeholder_key, t_safe["textarea_placeholder"])
