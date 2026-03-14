@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import httpx
+import re
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -886,6 +887,7 @@ async def ask(
         )
 
     cleaned_question = question.strip()
+    has_digital_error_token = bool(re.search(r"(?i)\bE\s*\d{1,3}\b", cleaned_question))
     if not cleaned_question:
         logger.warning("Blank question submitted")
         return HTMLResponse(
@@ -1009,7 +1011,7 @@ async def ask(
     elif action == "need_error":
         answer_text = translations["prompt_need_error"]
     else:
-        if diagnostic_context.parsed.error_code and not actuator_is_intelligent(diagnostic_context):
+        if has_digital_error_token and not actuator_is_intelligent(diagnostic_context):
             answer_text = translations.get("manual_error_mismatch", translations["prompt_need_error"])
             manual_error_response = True
         else:
