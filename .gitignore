@@ -1,1 +1,14 @@
 .env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Private data files
+data/
+
+# Runtime logs and user data
+regadam.log
+regadam_upload.log
+chat_metrics.csv
+feedback_metrics.csv
