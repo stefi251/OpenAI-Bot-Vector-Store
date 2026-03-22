@@ -1,1 +1,10 @@
 .env
+chat_metrics.csv
+feedback_metrics.csv
+regadam*.log
+__pycache__/
+*.pyc
+.DS_Store
+mcp-server-demo/
+mcp-servers-archived/
+data/private/

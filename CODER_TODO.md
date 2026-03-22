@@ -21,16 +21,13 @@
    - Keep escalation `mailto:` body URL-encoded before embedding user-derived text.
    - Add practical payload limits to avoid oversized `mailto:` links and client truncation.
 
-## Medium
+7. **OpenAI Efficiency**
+   - Switch Stage 2 to streaming or a slower poll cadence to cut the 10+ GET requests currently required per response.
+   - Block new `/ask` submissions on a thread while a run is still “queued/in_progress” (guard added in code, but keep monitoring for edge cases).
 
-5. **Configuration consistency**
-   - Standardize required env vars (`OPENAI_API_KEY`, `VECTOR_STORE_ID`, `ALLOWED_ORIGINS`, optional `ADMIN_STATS_KEY`).
-   - Document secure production defaults (strict CORS allowlist, hardened rate limits, reCAPTCHA where needed).
+8. **Manual Actuator Guidance**
+   - Ensure Slovak/Russian assistants have the SK/RU manuals ingested (e.g., SPO_280_SK) and explicitly search them for LED patterns when no error code exists.
+   - Update prompts to mention LED diagnostics for manual actuators so Stage 2 doesn’t return the generic “not found” response.
 
-6. **Frontend maintainability**
-   - Migrate large inline HTML blocks from `main.py` to Jinja2 templates if UI complexity grows.
-   - Keep explicit escaping rules for user-provided values in templates and JS sinks.
-
-7. **Testing and observability**
-   - Add `pytest` coverage for rate limits, stats auth guard, escalation flow, and OpenAI error handling.
-   - Add structured logging and alert thresholds for 429/5xx spikes.
+9. **Conversation UX**
+   - Improve history labels to show “Prefix 382” / “Error E17” rather than raw snippets, and surface short confirmation messages so users see context instead of one-letter entries.
