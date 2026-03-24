@@ -837,8 +837,13 @@ async def ask(
     known_symptoms: Optional[str] = Form(None),
     csrf_token: str = Form(...),
     captcha_token: Optional[str] = Form(None, alias="g-recaptcha-response"),
+    history_blob: Optional[str] = Form(None),
 ):  # noqa: PLR0912
-    client_host = request.client.host if request.client else "unknown"
+    client_host = (
+        request.headers.get("X-Real-IP")
+        or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
     if not _check_rate_limit(f"ask:{client_host}", ASK_RATE_LIMIT_MAX, ASK_RATE_LIMIT_WINDOW):
         return HTMLResponse(
             content="""
@@ -995,6 +1000,11 @@ async def ask(
         response_language = resolve_language(diagnostic_context.parsed.language or selected_lang)
     thread_id_value = (thread_id or "").strip()
     history_entries = _load_conversation_history(thread_id_value)
+    if not history_entries and not thread_id_value and history_blob:
+        try:
+            history_entries = json.loads(b64decode(history_blob).decode("utf-8"))
+        except Exception:
+            history_entries = []
     translations = get_translations(response_language)
     page_csrf_token = _generate_csrf_token()
 
@@ -1285,6 +1295,7 @@ async def ask(
                         <input type="hidden" name="known_prefix" value="{hidden_prefix_value}">
                         <input type="hidden" name="known_error_code" value="{hidden_error_value}">
                         <input type="hidden" name="known_symptoms" value="{hidden_symptom_value}">
+                        <input type="hidden" name="history_blob" value="{history_blob}">
                         <input type="hidden" name="csrf_token" value="{page_csrf_token}">
                         {captcha_block}
                         <button type="submit" class="btn btn-solid" style="margin-top:12px;">{continue_button_label}</button>
@@ -1352,11 +1363,17 @@ async def ask(
 
 @app.post("/feedback")
 async def feedback(request: Request, thread_id: str = Form(...), rating: int = Form(...), comment: str = Form(None), csrf_token: str = Form(...)):
-    client_host = request.client.host if request.client else "unknown"
+    client_host = (
+        request.headers.get("X-Real-IP")
+        or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
     if not _check_rate_limit(f"feedback:{client_host}", FEEDBACK_RATE_LIMIT_MAX, FEEDBACK_RATE_LIMIT_WINDOW):
         return JSONResponse({"status": "error", "detail": "Too many feedback submissions"}, status_code=429)
     if not _validate_csrf_token(csrf_token):
         return JSONResponse({"status": "error", "detail": "Invalid CSRF token"}, status_code=403)
+    if rating not in (1, -1):
+        return JSONResponse({"status": "error", "detail": "Invalid rating value"}, status_code=422)
     thread_id = (thread_id or "").strip()
     feedback_row = [
         datetime.now().isoformat(),
@@ -1398,11 +1415,13 @@ async def escalate(
         )
     conversation_id = (thread_id or "").strip()
     history_entries = _load_conversation_history(conversation_id)
-    if not history_entries and history_blob:
+    if history_blob:
         try:
-            history_entries = json.loads(b64decode(history_blob).decode("utf-8"))
+            blob_entries = json.loads(b64decode(history_blob).decode("utf-8"))
+            if len(blob_entries) > len(history_entries):
+                history_entries = blob_entries
         except Exception:
-            history_entries = []
+            pass
     if not history_entries:
         return HTMLResponse(
             content="<p>No conversation history found for escalation.</p>",
@@ -1425,7 +1444,6 @@ async def escalate(
     mailto_body = quote(thread_text)
 
     lang_param = html.escape(selected_lang)
-    mailto_body = html.escape(thread_text)
     email_link = f'<a href="mailto:servis@regada.sk?subject=Eskalacia%20RegAdam&body={mailto_body}" target="_blank" rel="noopener">servis@regada.sk</a>'
     instruction_html = html.escape(translations["escalation_instruction"]).replace("servis@regada.sk", email_link)
     return HTMLResponse(content=f"""
@@ -1513,7 +1531,8 @@ async def health_check():
         await asyncio.to_thread(client.models.list)
         return {"status": "healthy", "timestamp": datetime.now().isoformat()}
     except Exception as e:
-        return {"status": "unhealthy", "error": str(e)}
+        logger.error("Health check failed: %s", e)
+        return {"status": "unhealthy"}
 
 
 @app.get("/debug/error/{code}")
@@ -1540,4 +1559,4 @@ async def debug_actuator(prefix: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
