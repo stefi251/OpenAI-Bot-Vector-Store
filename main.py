@@ -16,6 +16,8 @@ from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
+import hashlib
+import hmac
 import httpx
 import re
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -567,6 +569,39 @@ def _verify_recaptcha(token: Optional[str]) -> bool:
         return False
 
 
+_BLOB_SECRET = os.getenv("BLOB_HMAC_SECRET", "").encode()
+_THREAD_ID_RE = re.compile(r'^thread_[A-Za-z0-9]{10,}$')
+
+
+def _sign_blob(blob: str) -> str:
+    """Append an HMAC-SHA256 signature to a base64 blob string."""
+    if not _BLOB_SECRET:
+        return blob
+    sig = hmac.new(_BLOB_SECRET, blob.encode(), hashlib.sha256).hexdigest()
+    return f"{blob}.{sig}"
+
+
+def _verify_blob(signed: str) -> Optional[str]:
+    """Verify and return the raw blob, or None if signature is invalid/missing."""
+    if not signed:
+        return None
+    if not _BLOB_SECRET:
+        return signed  # secret not configured: pass through (backwards compat)
+    parts = signed.rsplit(".", 1)
+    if len(parts) != 2:
+        return None
+    blob, sig = parts
+    expected = hmac.new(_BLOB_SECRET, blob.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        return None
+    return blob
+
+
+def _is_valid_thread_id(thread_id: str) -> bool:
+    """Accept only well-formed OpenAI thread IDs."""
+    return bool(_THREAD_ID_RE.match(thread_id))
+
+
 def _generate_csrf_token() -> str:
     token = secrets.token_urlsafe(32)
     expiry = time.time() + CSRF_TOKEN_TTL
@@ -1028,10 +1063,15 @@ async def ask(
     else:
         response_language = resolve_language(diagnostic_context.parsed.language or selected_lang)
     thread_id_value = (thread_id or "").strip()
+    if thread_id_value and not _is_valid_thread_id(thread_id_value):
+        logger.warning("Rejected invalid thread_id format: %s", thread_id_value[:60])
+        thread_id_value = ""
     history_entries = _load_conversation_history(thread_id_value)
     if not history_entries and not thread_id_value and history_blob:
         try:
-            history_entries = json.loads(b64decode(history_blob).decode("utf-8"))
+            verified = _verify_blob(history_blob)
+            if verified:
+                history_entries = json.loads(b64decode(verified).decode("utf-8"))
         except Exception:
             history_entries = []
     translations = get_translations(response_language)
@@ -1104,8 +1144,8 @@ async def ask(
     log_row = [
         datetime.now().isoformat(),
         _sanitize_csv_value(thread_id_value),
-        _sanitize_csv_value(cleaned_question),
-        _sanitize_csv_value(answer_text),
+        _sanitize_csv_value(cleaned_question[:500]),
+        _sanitize_csv_value(answer_text[:500]),
     ]
     try:
         with CSV_LOCK:
@@ -1136,7 +1176,7 @@ async def ask(
     )
     diagnostic_cards_safe = diagnostic_cards_html
     feedback_disabled_attr = "" if thread_id_value else "disabled"
-    history_blob = b64encode(json.dumps(history_with_current).encode("utf-8")).decode("ascii")
+    history_blob = _sign_blob(b64encode(json.dumps(history_with_current).encode("utf-8")).decode("ascii"))
     captcha_block = ""
     captcha_script = ""
     if RECAPTCHA_SITE_KEY:
@@ -1463,9 +1503,11 @@ async def escalate(
     history_entries = _load_conversation_history(conversation_id)
     if history_blob:
         try:
-            blob_entries = json.loads(b64decode(history_blob).decode("utf-8"))
-            if len(blob_entries) > len(history_entries):
-                history_entries = blob_entries
+            verified = _verify_blob(history_blob)
+            if verified:
+                blob_entries = json.loads(b64decode(verified).decode("utf-8"))
+                if len(blob_entries) > len(history_entries):
+                    history_entries = blob_entries
         except Exception:
             pass
     if not history_entries:
