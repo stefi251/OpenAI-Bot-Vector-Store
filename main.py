@@ -513,7 +513,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'; "
             "style-src 'self' 'unsafe-inline' fonts.googleapis.com; "
             "font-src fonts.gstatic.com; "
-            "script-src 'self' www.google.com; "
+            "script-src 'self' 'unsafe-inline' www.google.com; "
             "frame-src www.google.com; "
             "img-src 'self' data:; "
             "connect-src 'self'"
