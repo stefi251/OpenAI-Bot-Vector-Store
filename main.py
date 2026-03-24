@@ -125,6 +125,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "contact_title": "Contact",
         "contact_greeting": "Hello, my name is Marko and I'm here for you.",
         "contact_button": "Service website",
+        "disclaimer": (
+            "<strong>AI Notice:</strong> RegAdam is an automated AI assistant for Regada product support only. "
+            "Responses are based on technical documentation and are provided for guidance purposes — "
+            "they do not constitute professional advice or an official statement by Regada s.r.o. "
+            "Always verify critical decisions with a qualified Regada service technician. "
+            "<strong>Data notice:</strong> Do not enter personal data (names, addresses, contact details) into this assistant. "
+            "Your questions may be logged for quality improvement. "
+            "For details see <a href='https://www.regada.sk' target='_blank' rel='noopener noreferrer'>regada.sk</a>."
+        ),
     },
     "sk": {
         "lang_label": "Slovenčina",
@@ -176,6 +185,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "contact_title": "Kontakt",
         "contact_greeting": "Dobrý deň, volám sa Marko a som tu pre vás.",
         "contact_button": "Viac o servise",
+        "disclaimer": (
+            "<strong>Upozornenie – AI systém:</strong> RegAdam je automatizovaný AI asistent určený výlučne na technickú podporu produktov Regada. "
+            "Odpovede vychádzajú z technickej dokumentácie a slúžia len ako orientačné informácie — "
+            "nepredstavujú odborné poradenstvo ani oficiálne stanovisko spoločnosti Regada s.r.o. "
+            "Kritické rozhodnutia vždy overte s kvalifikovaným servisným technikom Regada. "
+            "<strong>Ochrana osobných údajov:</strong> Nezadávajte do asistenta osobné údaje (mená, adresy, kontaktné informácie). "
+            "Vaše otázky môžu byť zaznamenané na účely zlepšovania kvality. "
+            "Podrobnosti nájdete na <a href='https://www.regada.sk' target='_blank' rel='noopener noreferrer'>regada.sk</a>."
+        ),
     },
     "ru": {
         "lang_label": "Русский",
@@ -227,6 +245,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "contact_title": "Контакт",
         "contact_greeting": "Здравствуйте, меня зовут Марко, я помогу вам.",
         "contact_button": "Подробнее о сервисе",
+        "disclaimer": (
+            "<strong>Уведомление об ИИ:</strong> RegAdam — автоматизированный ИИ-ассистент для технической поддержки продукции Regada. "
+            "Ответы основаны на технической документации и носят исключительно информационный характер — "
+            "они не являются профессиональной консультацией или официальным заявлением компании Regada s.r.o. "
+            "Критически важные решения всегда согласовывайте с квалифицированным специалистом сервиса Regada. "
+            "<strong>Защита данных:</strong> Не вводите персональные данные (имена, адреса, контактную информацию) в этот ассистент. "
+            "Ваши вопросы могут быть сохранены в целях улучшения качества обслуживания. "
+            "Подробнее на сайте <a href='https://www.regada.sk' target='_blank' rel='noopener noreferrer'>regada.sk</a>."
+        ),
     },
 }
 
@@ -847,6 +874,18 @@ async def html_form(lang: str = DEFAULT_LANGUAGE):
                 cursor:pointer;
                 font-weight:600;
             }}
+            .disclaimer-text {{
+                margin-top:16px;
+                font-size:12px;
+                color:#666;
+                line-height:1.5;
+                border-top:1px solid #e5e7eb;
+                padding-top:12px;
+            }}
+            .disclaimer-text a {{
+                color:#0066cc;
+                text-decoration:none;
+            }}
             .contact-panel {{
                 flex:1 1 260px;
             }}
@@ -881,6 +920,7 @@ async def html_form(lang: str = DEFAULT_LANGUAGE):
                     {captcha_block}
                     <button type=\"submit\" class=\"primary-btn\">{t["submit_button"]}</button>
                 </form>
+                <p class=\"disclaimer-text\">{t["disclaimer"]}</p>
             </div>
             <div class=\"contact-panel\">
                 {contact_html}
