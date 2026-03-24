@@ -1075,7 +1075,9 @@ async def ask(
         except Exception:
             history_entries = []
     translations = get_translations(response_language)
-    page_csrf_token = _generate_csrf_token()
+    csrf_feedback = _generate_csrf_token()
+    csrf_continue = _generate_csrf_token()
+    csrf_escalate = _generate_csrf_token()
 
     parsed = diagnostic_context.parsed
     state = incoming_state.merge(parsed.actuator_number_prefix, parsed.error_code, parsed.symptoms)
@@ -1335,7 +1337,7 @@ async def ask(
             <div class="primary-column">
                 <div class="card">
                     <input type="hidden" id="conversation-id" value="{safe_thread_id}">
-                    <input type="hidden" id="csrf-token" value="{page_csrf_token}">
+                    <input type="hidden" id="csrf-token" value="{csrf_feedback}">
                     <div class="lang-chip">{lang_badge}</div>
                     <h1>{t_safe["landing_title"]}</h1>
                     <h3>{t_safe["conversation_history"]}</h3>
@@ -1365,7 +1367,7 @@ async def ask(
                         <input type="hidden" name="known_error_code" value="{hidden_error_value}">
                         <input type="hidden" name="known_symptoms" value="{hidden_symptom_value}">
                         <input type="hidden" name="history_blob" value="{history_blob}">
-                        <input type="hidden" name="csrf_token" value="{page_csrf_token}">
+                        <input type="hidden" name="csrf_token" value="{csrf_continue}">
                         {captcha_block}
                         <button type="submit" class="btn btn-solid" style="margin-top:12px;">{continue_button_label}</button>
                     </form>
@@ -1374,7 +1376,7 @@ async def ask(
                             <input type="hidden" name="thread_id" value="{safe_thread_id}">
                             <input type="hidden" name="history_blob" value="{history_blob}">
                             <input type="hidden" name="lang" value="{lang_param}">
-                            <input type="hidden" name="csrf_token" value="{page_csrf_token}">
+                            <input type="hidden" name="csrf_token" value="{csrf_escalate}">
                             <button type="submit" class="btn btn-outline" {"disabled" if not thread_id_value else ""}>{t_safe["escalate"]}</button>
                         </form>
                         <a href="/?lang={lang_param}" class="btn btn-outline">{t_safe["new_convo"]}</a>
