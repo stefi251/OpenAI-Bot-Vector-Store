@@ -34,14 +34,15 @@ from text_utils import (
     normalize_prefix,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('regadam.log'),
-        logging.StreamHandler()
-    ]
-)
+from logging.handlers import RotatingFileHandler as _RotatingFileHandler
+_log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+_rotating_handler = _RotatingFileHandler('regadam.log', maxBytes=10 * 1024 * 1024, backupCount=5)
+_rotating_handler.setFormatter(_log_formatter)
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(_log_formatter)
+logging.root.setLevel(logging.INFO)
+logging.root.addHandler(_rotating_handler)
+logging.root.addHandler(_stream_handler)
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -496,6 +497,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "geolocation=(), microphone=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "style-src 'self' 'unsafe-inline' fonts.googleapis.com; "
+            "font-src fonts.gstatic.com; "
+            "script-src 'self' www.google.com; "
+            "frame-src www.google.com; "
+            "img-src 'self' data:; "
+            "connect-src 'self'"
+        )
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 
 def _sanitize_csv_value(value: Optional[str]) -> str:
     if value is None:
@@ -514,9 +538,13 @@ def _check_rate_limit(identifier: str, max_calls: int, window_seconds: int) -> b
         bucket = rate_limit_data[identifier]
         while bucket and now - bucket[0] > window_seconds:
             bucket.popleft()
+        if not bucket:
+            rate_limit_data.pop(identifier, None)  # evict empty stale entry
         if len(bucket) >= max_calls:
             return False
         bucket.append(now)
+        if identifier not in rate_limit_data:
+            rate_limit_data[identifier] = bucket  # re-add after eviction
         return True
 
 
@@ -543,6 +571,10 @@ def _generate_csrf_token() -> str:
     token = secrets.token_urlsafe(32)
     expiry = time.time() + CSRF_TOKEN_TTL
     with CSRF_LOCK:
+        now = time.time()
+        expired = [key for key, exp in CSRF_TOKENS.items() if exp <= now]
+        for key in expired:
+            CSRF_TOKENS.pop(key, None)
         CSRF_TOKENS[token] = expiry
     return token
 
@@ -552,10 +584,7 @@ def _validate_csrf_token(token: Optional[str]) -> bool:
         return False
     now = time.time()
     with CSRF_LOCK:
-        expired = [key for key, expiry in CSRF_TOKENS.items() if expiry <= now]
-        for key in expired:
-            CSRF_TOKENS.pop(key, None)
-        expires_at = CSRF_TOKENS.get(token)
+        expires_at = CSRF_TOKENS.pop(token, None)  # consume: single-use
         if expires_at and expires_at > now:
             return True
     return False
@@ -1397,11 +1426,28 @@ async def feedback(request: Request, thread_id: str = Form(...), rating: int = F
 
 @app.post("/escalate")
 async def escalate(
+    request: Request,
     thread_id: str = Form(...),
     history_blob: str = Form(None),
     lang: str = Form(DEFAULT_LANGUAGE),
     csrf_token: str = Form(...),
 ):
+    client_host = (
+        request.headers.get("X-Real-IP")
+        or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
+    if not _check_rate_limit(f"escalate:{client_host}", FEEDBACK_RATE_LIMIT_MAX, FEEDBACK_RATE_LIMIT_WINDOW):
+        return HTMLResponse(
+            content="""
+        <html><body style='padding:20px;font-family:sans-serif;'>
+            <h3>Too Many Requests</h3>
+            <p>Please wait a moment before escalating again.</p>
+            <a href='/'>← Return Home</a>
+        </body></html>
+        """,
+            status_code=429,
+        )
     if not _validate_csrf_token(csrf_token):
         return HTMLResponse(
             content="""
@@ -1536,11 +1582,14 @@ async def health_check():
 
 
 @app.get("/debug/error/{code}")
-async def debug_error(code: str):
+async def debug_error(code: str, request: Request):
     """
     Lightweight helper to verify structured error lookups before wiring
     them into the two-stage pipeline.
     """
+    require_key = os.getenv("ADMIN_STATS_KEY")
+    if require_key and request.headers.get("X-Admin-Stats-Key") != require_key:
+        raise HTTPException(status_code=403, detail="Forbidden")
     record = lookup_error(code)
     if not record:
         raise HTTPException(status_code=404, detail="Error code not found")
@@ -1548,10 +1597,13 @@ async def debug_error(code: str):
 
 
 @app.get("/debug/actuator/{prefix}")
-async def debug_actuator(prefix: str):
+async def debug_actuator(prefix: str, request: Request):
     """
     Lightweight helper for checking actuator prefix normalization.
     """
+    require_key = os.getenv("ADMIN_STATS_KEY")
+    if require_key and request.headers.get("X-Admin-Stats-Key") != require_key:
+        raise HTTPException(status_code=403, detail="Forbidden")
     record = lookup_actuator(prefix, language=DEFAULT_LANGUAGE)
     if not record:
         raise HTTPException(status_code=404, detail="Actuator prefix not found")
